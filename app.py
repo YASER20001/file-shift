@@ -1,120 +1,201 @@
-import io
-import zipfile
+import os
+import shutil
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 
 import openpyxl
-import viktor as vkt
 
 
-class Parametrization(vkt.Parametrization):
-    intro = vkt.Text(
-        "# File Shift\n"
-        "Upload an Excel file containing **JO/EWO** (job numbers) and **File ID** (file names), "
-        "then upload the source files. The app will organize them into folders by job number."
-    )
+class FileShiftApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("File Shift")
+        self.root.geometry("750x550")
+        self.root.resizable(False, False)
 
-    # Step 1: Excel file
-    excel_heading = vkt.Text("## Step 1: Upload Excel File")
-    excel_file = vkt.FileField("Excel File (.xlsx)", file_types=[".xlsx"], max_size=50_000_000)
+        self.excel_path = tk.StringVar()
+        self.source_folder = tk.StringVar()
+        self.dest_folder = tk.StringVar()
+        self.operation = tk.StringVar(value="Copy")
+        self.mapping = []  # list of (jo_ewo, file_id)
 
-    # Step 2: Source files
-    source_heading = vkt.Text("## Step 2: Upload Source Files")
-    source_files = vkt.MultiFileField("Source Files", file_types=[], max_size=50_000_000)
+        self._build_ui()
 
-    # Step 3: Operation mode
-    operation_heading = vkt.Text("## Step 3: Choose Operation")
-    operation = vkt.OptionField(
-        "Copy or Move?",
-        options=["Copy", "Move"],
-        default="Copy",
-        description="Copy keeps originals in the download; Move only places files in job folders.",
-    )
+    # ------------------------------------------------------------------ UI
+    def _build_ui(self):
+        pad = {"padx": 10, "pady": 5}
+
+        # --- Step 1: Excel file ---
+        frame1 = ttk.LabelFrame(self.root, text="Step 1: Excel File")
+        frame1.pack(fill="x", **pad)
+
+        ttk.Entry(frame1, textvariable=self.excel_path, state="readonly", width=70).pack(
+            side="left", padx=(10, 5), pady=8
+        )
+        ttk.Button(frame1, text="Browse", command=self._browse_excel).pack(
+            side="left", padx=5, pady=8
+        )
+        ttk.Button(frame1, text="Load", command=self._load_excel).pack(
+            side="left", padx=5, pady=8
+        )
+
+        # --- Step 2: Source folder ---
+        frame2 = ttk.LabelFrame(self.root, text="Step 2: Source Folder (where your files are)")
+        frame2.pack(fill="x", **pad)
+
+        ttk.Entry(frame2, textvariable=self.source_folder, state="readonly", width=70).pack(
+            side="left", padx=(10, 5), pady=8
+        )
+        ttk.Button(frame2, text="Browse", command=self._browse_source).pack(
+            side="left", padx=5, pady=8
+        )
+
+        # --- Step 3: Destination folder ---
+        frame3 = ttk.LabelFrame(self.root, text="Step 3: Destination Folder (output)")
+        frame3.pack(fill="x", **pad)
+
+        ttk.Entry(frame3, textvariable=self.dest_folder, state="readonly", width=70).pack(
+            side="left", padx=(10, 5), pady=8
+        )
+        ttk.Button(frame3, text="Browse", command=self._browse_dest).pack(
+            side="left", padx=5, pady=8
+        )
+
+        # --- Step 4: Copy or Move ---
+        frame4 = ttk.LabelFrame(self.root, text="Step 4: Operation")
+        frame4.pack(fill="x", **pad)
+
+        ttk.Radiobutton(frame4, text="Copy", variable=self.operation, value="Copy").pack(
+            side="left", padx=(10, 20), pady=8
+        )
+        ttk.Radiobutton(frame4, text="Move", variable=self.operation, value="Move").pack(
+            side="left", padx=20, pady=8
+        )
+
+        # --- Preview table ---
+        table_frame = ttk.LabelFrame(self.root, text="Preview (JO/EWO  →  File ID)")
+        table_frame.pack(fill="both", expand=True, **pad)
+
+        columns = ("jo", "file_id")
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=8)
+        self.tree.heading("jo", text="JO/EWO")
+        self.tree.heading("file_id", text="File ID")
+        self.tree.column("jo", width=200)
+        self.tree.column("file_id", width=480)
+
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=5)
+        scrollbar.pack(side="right", fill="y", padx=(0, 10), pady=5)
+
+        # --- Run button ---
+        ttk.Button(self.root, text="Run", command=self._run).pack(pady=10)
+
+    # ------------------------------------------------------------ Callbacks
+    def _browse_excel(self):
+        path = filedialog.askopenfilename(
+            title="Select Excel File",
+            filetypes=[("Excel files", "*.xlsx *.xls"), ("All files", "*.*")],
+        )
+        if path:
+            self.excel_path.set(path)
+
+    def _browse_source(self):
+        path = filedialog.askdirectory(title="Select Source Folder")
+        if path:
+            self.source_folder.set(path)
+
+    def _browse_dest(self):
+        path = filedialog.askdirectory(title="Select Destination Folder")
+        if path:
+            self.dest_folder.set(path)
+
+    def _load_excel(self):
+        path = self.excel_path.get()
+        if not path:
+            messagebox.showwarning("No file", "Please select an Excel file first.")
+            return
+
+        try:
+            self.mapping = parse_excel(path)
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+            return
+
+        # Populate the preview table
+        self.tree.delete(*self.tree.get_children())
+        for jo, file_id in self.mapping:
+            self.tree.insert("", "end", values=(jo, file_id))
+
+        messagebox.showinfo("Loaded", f"Found {len(self.mapping)} entries.")
+
+    def _run(self):
+        if not self.mapping:
+            messagebox.showwarning("No data", "Load an Excel file first.")
+            return
+        if not self.source_folder.get():
+            messagebox.showwarning("No source", "Select a source folder.")
+            return
+        if not self.dest_folder.get():
+            messagebox.showwarning("No destination", "Select a destination folder.")
+            return
+
+        src = self.source_folder.get()
+        dst = self.dest_folder.get()
+        op = self.operation.get()
+
+        # Build lookup of available source files (name -> full path)
+        source_files = {}
+        for f in os.listdir(src):
+            full = os.path.join(src, f)
+            if os.path.isfile(full):
+                source_files[f] = full
+
+        matched = 0
+        not_found = []
+
+        for jo, file_id in self.mapping:
+            # Find the file (exact match, then case-insensitive)
+            src_path = source_files.get(file_id)
+            if src_path is None:
+                for name, path in source_files.items():
+                    if name.lower() == file_id.lower():
+                        src_path = path
+                        break
+
+            if src_path is None:
+                not_found.append(file_id)
+                continue
+
+            # Create job folder
+            job_folder = os.path.join(dst, str(jo))
+            os.makedirs(job_folder, exist_ok=True)
+
+            dest_path = os.path.join(job_folder, os.path.basename(src_path))
+
+            if op == "Copy":
+                shutil.copy2(src_path, dest_path)
+            else:
+                shutil.move(src_path, dest_path)
+
+            matched += 1
+
+        # Summary
+        msg = f"Done!\n\nMatched & {op.lower()}d: {matched} files"
+        if not_found:
+            msg += f"\nNot found in source folder: {len(not_found)} files\n\n"
+            msg += "\n".join(not_found[:20])
+            if len(not_found) > 20:
+                msg += f"\n... and {len(not_found) - 20} more"
+
+        messagebox.showinfo("Complete", msg)
 
 
-class Controller(vkt.Controller):
-    parametrization = Parametrization
-
-    @vkt.TableView("Excel Preview", duration_guess=3)
-    def preview_excel(self, params, **kwargs):
-        """Show a preview of the JO/EWO and File ID columns extracted from the uploaded Excel."""
-        if not params.excel_file:
-            return vkt.TableResult([])
-
-        mapping = _parse_excel(params.excel_file.file)
-        data = []
-        for jo, file_id in mapping:
-            data.append([jo, file_id])
-
-        return vkt.TableResult(data, column_headers=["JO/EWO", "File ID"])
-
-    @vkt.DownloadButton("Download Organized Files", method="organize_files", longpoll=True)
-    def download_btn(self, params, **kwargs):
-        ...
-
-    def organize_files(self, params, **kwargs):
-        """Create a ZIP with files organized into job-number folders."""
-        if not params.excel_file:
-            raise vkt.UserError("Please upload an Excel file first.")
-        if not params.source_files:
-            raise vkt.UserError("Please upload source files first.")
-
-        # Parse Excel to get (job_number, file_name) pairs
-        mapping = _parse_excel(params.excel_file.file)
-
-        # Build a lookup: file_name -> job_number
-        file_to_job = {}
-        for jo, file_id in mapping:
-            file_to_job[file_id] = jo
-
-        # Build source file lookup: filename -> file content
-        source_lookup = {}
-        for f in params.source_files:
-            source_lookup[f.filename] = f.file
-
-        # Create ZIP in memory
-        buffer = io.BytesIO()
-        matched_files = set()
-
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            for file_name, job_number in file_to_job.items():
-                # Try exact match first, then case-insensitive
-                source_file = source_lookup.get(file_name)
-                if source_file is None:
-                    # Try case-insensitive match
-                    for src_name, src_file in source_lookup.items():
-                        if src_name.lower() == file_name.lower():
-                            source_file = src_file
-                            file_name = src_name
-                            break
-
-                if source_file is not None:
-                    matched_files.add(file_name)
-                    # Place file inside job-number folder
-                    archive_path = f"{job_number}/{file_name}"
-                    content = source_file.getvalue_binary()
-                    zf.writestr(archive_path, content)
-
-            # If Copy mode, also include unmatched files in an "Unmatched" folder
-            if params.operation == "Copy":
-                for src_name, src_file in source_lookup.items():
-                    if src_name not in matched_files:
-                        zf.writestr(f"_Unmatched/{src_name}", src_file.getvalue_binary())
-
-        buffer.seek(0)
-        file_obj = vkt.File.from_data(buffer.read())
-        return vkt.DownloadResult(file_obj, file_name="organized_files.zip")
-
-
-def _parse_excel(file):
-    """Parse the uploaded Excel file and return list of (jo_ewo, file_id) tuples.
-
-    Searches for columns named 'JO/EWO' and 'File ID' (case-insensitive)
-    in the header row.
-    """
-    content = file.getvalue_binary()
-    wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+def parse_excel(path):
+    """Read an Excel file and return list of (jo_ewo, file_id) tuples."""
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
 
-    # Find header row and column indices
     jo_col = None
     file_col = None
     header_row = None
@@ -133,12 +214,11 @@ def _parse_excel(file):
 
     if jo_col is None or file_col is None:
         wb.close()
-        raise vkt.UserError(
+        raise ValueError(
             "Could not find 'JO/EWO' and 'File ID' columns in the Excel file. "
-            "Please make sure the header row contains these column names."
+            "Make sure the header row contains these column names."
         )
 
-    # Extract data rows
     results = []
     for row in ws.iter_rows(min_row=header_row + 1):
         cells = list(row)
@@ -150,3 +230,9 @@ def _parse_excel(file):
 
     wb.close()
     return results
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    FileShiftApp(root)
+    root.mainloop()
