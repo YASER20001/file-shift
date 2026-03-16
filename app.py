@@ -144,24 +144,32 @@ class FileShiftApp:
         dst = self.dest_folder.get()
         op = self.operation.get()
 
-        # Build lookup of available source files (name -> full path)
-        source_files = {}
+        # Build lookup of available source files
+        # Maps: exact name -> path, name-without-ext -> path, lowercase variants
+        source_files = {}          # exact filename -> full path
+        source_by_stem = {}        # filename without extension (lowercase) -> full path
         for f in os.listdir(src):
             full = os.path.join(src, f)
             if os.path.isfile(full):
                 source_files[f] = full
+                stem = os.path.splitext(f)[0].lower()
+                source_by_stem[stem] = full
 
         matched = 0
         not_found = []
 
         for jo, file_id in self.mapping:
-            # Find the file (exact match, then case-insensitive)
+            # 1) Exact filename match
             src_path = source_files.get(file_id)
+            # 2) Case-insensitive exact match
             if src_path is None:
                 for name, path in source_files.items():
                     if name.lower() == file_id.lower():
                         src_path = path
                         break
+            # 3) Match by filename without extension (e.g. "ID-001" matches "ID-001.pdf")
+            if src_path is None:
+                src_path = source_by_stem.get(file_id.lower())
 
             if src_path is None:
                 not_found.append(file_id)
