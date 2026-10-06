@@ -6,10 +6,10 @@ from tkinter import filedialog, messagebox, ttk
 import openpyxl
 
 
-class FileShiftApp:
+class VideosWorksApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("File Shift")
+        self.root.title("Videos Works")
         self.root.geometry("750x550")
         self.root.resizable(False, False)
 
@@ -242,5 +242,5 @@ def parse_excel(path):
 
 if __name__ == "__main__":
     root = tk.Tk()
-    FileShiftApp(root)
+    VideosWorksApp(root)
     root.mainloop()
